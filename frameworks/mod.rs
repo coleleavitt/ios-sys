@@ -3,8 +3,10 @@
 //! Generates Rust FFI bindings for:
 //! - Public iOS frameworks (from headers via bindgen)
 //! - Private iOS frameworks (from TBD files)
+//! - Objective-C classes (from runtime introspection)
 
 mod tbd;
+mod objc_codegen;
 
 use std::env;
 use std::fs;
@@ -726,87 +728,29 @@ fn generate_bindings(sdk_path: &Path) {
         .write_to_file(out_path.join("mach.rs"))
         .expect("Couldn't write mach bindings!");
 
-    // Generate Foundation/CoreGraphics types (ALWAYS)
-    println!("cargo:warning=Generating Foundation type bindings...");
-    let foundation_bindings = bindgen::Builder::default()
-        .header_contents(
-            "foundation_wrapper.h",
-            r#"
-#include <objc/objc.h>
-#include <objc/NSObjCRuntime.h>
+    // Generate Foundation bindings (ALWAYS)
+    println!("cargo:warning=Generating Foundation bindings from runtime dump...");
 
-typedef double CGFloat;
-
-typedef struct CGPoint {
-    CGFloat x;
-    CGFloat y;
-} CGPoint;
-
-typedef struct CGSize {
-    CGFloat width;
-    CGFloat height;
-} CGSize;
-
-typedef struct CGRect {
-    CGPoint origin;
-    CGSize size;
-} CGRect;
-
-typedef struct NSRange {
-    NSUInteger location;
-    NSUInteger length;
-} NSRange;
-
-typedef struct UIEdgeInsets {
-    CGFloat top;
-    CGFloat left;
-    CGFloat bottom;
-    CGFloat right;
-} UIEdgeInsets;
-
-typedef struct UIOffset {
-    CGFloat horizontal;
-    CGFloat vertical;
-} UIOffset;
-
-typedef NSInteger NSComparisonResult;
-typedef NSUInteger NSStringEncoding;
-
-enum {
-    NSOrderedAscending = -1L,
-    NSOrderedSame = 0,
-    NSOrderedDescending = 1
-};
-
-enum {
-    NSASCIIStringEncoding = 1,
-    NSUTF8StringEncoding = 4,
-    NSUTF16StringEncoding = 10,
-    NSUTF32StringEncoding = 0x8c000100
-};
-            "#,
-        )
-        .clang_args(&common_args)
-        .allowlist_type("CG.*")
-        .allowlist_type("NS.*")
-        .allowlist_type("UI.*")
-        .allowlist_var("NS.*")
-        .allowlist_var("CG.*")
-        .allowlist_var("UI.*")
-        .derive_default(true)
-        .derive_debug(true)
-        .derive_copy(true)
-        .derive_eq(true)
-        .derive_partialeq(true)
-        .use_core()
-        .ctypes_prefix("::core::ffi")
-        .parse_callbacks(Box::new(bindgen::CargoCallbacks::new()))
-        .generate()
-        .expect("Unable to generate foundation bindings");
-
-    foundation_bindings
-        .write_to_file(out_path.join("foundation.rs"))
-        .expect("Couldn't write foundation bindings!");
+    // Check if we have a class dump file (prefer comprehensive dump)
+    let class_dump_path = if Path::new("/tmp/all_objc_classes.txt").exists() {
+        Path::new("/tmp/all_objc_classes.txt")
+    } else {
+        Path::new("/tmp/foundation_classes.txt")
+    };
+    if class_dump_path.exists() {
+        if let Err(e) = objc_codegen::generate_from_dump_file(
+            class_dump_path,
+            &out_path.join("foundation.rs")
+        ) {
+            println!("cargo:warning=Failed to generate from class dump: {}", e);
+            println!("cargo:warning=Falling back to minimal Foundation bindings");
+            generate_minimal_foundation_bindings(&out_path);
+        }
+    } else {
+        println!("cargo:warning=No class dump found at /tmp/foundation_classes.txt");
+        println!("cargo:warning=Run class_dump tool on device to generate full bindings");
+        generate_minimal_foundation_bindings(&out_path);
+    }
 
     // Generate CoreFoundation bindings (ALWAYS)
     println!("cargo:warning=Generating CoreFoundation bindings...");
@@ -934,6 +878,34 @@ fn get_framework_prefix(framework: &str) -> String {
     }
 }
 
+fn generate_minimal_foundation_bindings(out_path: &Path) {
+    let stub = r#"// Minimal Foundation bindings
+// Run class_dump tool to generate full bindings
+
+use crate::objc::{id, Class};
+
+// Basic types
+pub type NSInteger = isize;
+pub type NSUInteger = usize;
+pub type CGFloat = f64;
+
+#[repr(C)]
+#[derive(Debug, Copy, Clone, PartialEq)]
+pub struct NSRange {
+    pub location: NSUInteger,
+    pub length: NSUInteger,
+}
+
+// Essential C functions
+#[link(name = "Foundation", kind = "framework")]
+unsafe extern "C" {
+    pub fn NSLog(format: id, ...);
+    pub fn NSClassFromString(aClassName: id) -> Class;
+}
+"#;
+    fs::write(out_path.join("foundation.rs"), stub).expect("Failed to write Foundation stub");
+}
+
 fn generate_framework_bindings(
     common_args: &[&str],
     out_path: &Path,
@@ -943,20 +915,72 @@ fn generate_framework_bindings(
     let header_content = format!("#include <{0}/{0}.h>", framework_name);
     let module_name = framework_name.to_lowercase().replace("_", "");
 
-    let bindings = bindgen::Builder::default()
-        .header_contents(&format!("{}_wrapper.h", module_name), &header_content)
-        .clang_args(common_args)
-        .allowlist_type(&format!("{}.*", prefix))
-        .allowlist_function(&format!("{}.*", prefix))
-        .allowlist_var(&format!("k{}.*", prefix))
-        .allowlist_var(&format!("{}.*", prefix))
-        .derive_default(true)
-        .derive_debug(true)
-        .derive_copy(true)
-        .use_core()
-        .ctypes_prefix("::core::ffi")
-        .parse_callbacks(Box::new(bindgen::CargoCallbacks::new()))
-        .generate();
+    // For Foundation, only generate C functions and basic types
+    // Objective-C classes will be generated from runtime introspection
+    let bindings = if framework_name == "Foundation" {
+        bindgen::Builder::default()
+            .header_contents(&format!("{}_wrapper.h", module_name), &header_content)
+            .clang_args(common_args)
+            // Only generate C functions, not ObjC classes
+            .allowlist_function("NSLog")
+            .allowlist_function("NSLog.*")
+            .allowlist_function("NSClassFromString")
+            .allowlist_function("NSSelectorFromString")
+            .allowlist_function("NSStringFromClass")
+            .allowlist_function("NSStringFromSelector")
+            .allowlist_function("NSStringFromProtocol")
+            .allowlist_function("NSProtocolFromString")
+            .allowlist_function("NSStringFromRange")
+            .allowlist_function("NSRangeFromString")
+            .allowlist_function("NSMakeRange")
+            .allowlist_function("NSEqualRanges")
+            .allowlist_function("NSLocationInRange")
+            .allowlist_function("NSUnionRange")
+            .allowlist_function("NSIntersectionRange")
+            // Constants
+            .allowlist_var("k.*")
+            .allowlist_var("NS.*")
+            // Basic types (structs, enums, typedefs)
+            .allowlist_type("NSInteger")
+            .allowlist_type("NSUInteger")
+            .allowlist_type("NSRange")
+            .allowlist_type("NSPoint")
+            .allowlist_type("NSSize")
+            .allowlist_type("NSRect")
+            .allowlist_type("CGFloat")
+            .allowlist_type("CGPoint")
+            .allowlist_type("CGSize")
+            .allowlist_type("CGRect")
+            .allowlist_type("NSComparisonResult")
+            .allowlist_type("NSStringEncoding")
+            .allowlist_type("UIEdgeInsets")
+            .allowlist_type("UIOffset")
+            .derive_default(true)
+            .derive_debug(true)
+            .derive_copy(true)
+            .derive_eq(true)
+            .derive_partialeq(true)
+            .use_core()
+            .ctypes_prefix("::core::ffi")
+            .parse_callbacks(Box::new(bindgen::CargoCallbacks::new()))
+            .generate()
+    } else {
+        // For other frameworks, try normal generation
+        bindgen::Builder::default()
+            .header_contents(&format!("{}_wrapper.h", module_name), &header_content)
+            .clang_args(common_args)
+            .allowlist_type(&format!("{}.*", prefix))
+            .allowlist_function(&format!("{}.*", prefix))
+            .allowlist_var(&format!("k{}.*", prefix))
+            .allowlist_var(&format!("{}.*", prefix))
+            .derive_default(true)
+            .derive_debug(true)
+            .derive_copy(true)
+            .use_core()
+            .ctypes_prefix("::core::ffi")
+            .parse_callbacks(Box::new(bindgen::CargoCallbacks::new()))
+            .generate()
+    };
 
     match bindings {
         Ok(b) => {
