@@ -47,6 +47,14 @@ pub mod mach {
     include!(concat!(env!("OUT_DIR"), "/mach.rs"));
 }
 
+pub mod stdlib {
+    //! C standard library bindings (auto-generated from stdlib.h)
+    //! Provides memory management functions: malloc, calloc, realloc, free
+    #![allow(clippy::all)]
+    #![allow(warnings)]
+    include!(concat!(env!("OUT_DIR"), "/stdlib.rs"));
+}
+
 pub mod foundation {
     //! Foundation framework type bindings (auto-generated)
     #![allow(clippy::all)]
@@ -70,6 +78,9 @@ pub mod coregraphics {
 
 // Re-export commonly used types for convenience
 pub use objc::{Class, Ivar, Method, SEL};
+
+// Re-export commonly used stdlib functions for convenience
+pub use stdlib::{calloc, free, malloc, realloc};
 
 // ============================================================================
 // Public Framework Modules (auto-generated from SDK headers)

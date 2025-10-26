@@ -15,62 +15,7 @@ pub struct TbdInfo {
     pub objc_ivars: Vec<String>,
 }
 
-impl TbdInfo {
-    /// Get all C function symbols (heuristic: starts with lowercase or specific prefixes)
-    pub fn get_c_functions(&self) -> Vec<String> {
-        self.symbols
-            .iter()
-            .filter(|s| {
-                // Remove leading underscore (C ABI naming)
-                let name = s.trim_start_matches('_');
-
-                // Skip linker directives and ObjC symbols
-                if s.starts_with("$ld$") || s.contains("_OBJC_") {
-                    return false;
-                }
-
-                // Skip constants (usually ALL_CAPS or start with 'k')
-                if name.starts_with('k') && name.len() > 1 && name.chars().nth(1).map(|c| c.is_uppercase()).unwrap_or(false) {
-                    return false;
-                }
-
-                // Functions usually start with lowercase or NS/CF prefix
-                name.starts_with("NS") ||
-                name.starts_with("CF") ||
-                name.starts_with("CG") ||
-                name.chars().next().map(|c| c.is_lowercase()).unwrap_or(false)
-            })
-            .map(|s| s.trim_start_matches('_').to_string())
-            .collect()
-    }
-
-    /// Get all constant symbols (heuristic: starts with 'k' or ALL_CAPS)
-    pub fn get_constants(&self) -> Vec<String> {
-        self.symbols
-            .iter()
-            .filter(|s| {
-                let name = s.trim_start_matches('_');
-
-                // Skip linker directives and ObjC symbols
-                if s.starts_with("$ld$") || s.contains("_OBJC_") {
-                    return false;
-                }
-
-                // Skip things that look like functions (not constants)
-                // Functions usually start with NS/CF/CG and have mixed case after
-                if (name.starts_with("NS") || name.starts_with("CF") || name.starts_with("CG")) &&
-                   name.chars().any(|c| c.is_lowercase()) {
-                    // This is likely a function, not a constant
-                    return false;
-                }
-
-                // Constants start with 'k' followed by uppercase
-                (name.starts_with('k') && name.len() > 1 && name.chars().nth(1).map(|c| c.is_uppercase()).unwrap_or(false))
-            })
-            .map(|s| s.trim_start_matches('_').to_string())
-            .collect()
-    }
-}
+// Removed unused TbdInfo methods - they were never called
 
 /// TBD file structure (v3 format - most common in Theos SDKs)
 #[derive(Debug, Deserialize)]

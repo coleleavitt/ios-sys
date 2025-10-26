@@ -49,9 +49,50 @@ impl ObjCType {
             ObjCType::Class => "Class".to_string(),
             ObjCType::SEL => "SEL".to_string(),
             ObjCType::CharPointer => "*const i8".to_string(),
-            ObjCType::Pointer(inner) => format!("*mut {}", inner.to_rust_type()),
-            ObjCType::Struct(name) => name.clone(),
-            ObjCType::Unknown(s) => format!("/* {} */ *mut c_void", s),
+            ObjCType::Pointer(inner) => {
+                // Special handling for unknown pointer types
+                match &**inner {
+                    ObjCType::Unknown(_) => "*mut c_void".to_string(),
+                    ObjCType::Struct(s) if s.starts_with('?') || s.is_empty() => "*mut c_void".to_string(),
+                    _ => format!("*mut {}", inner.to_rust_type()),
+                }
+            }
+            ObjCType::Struct(name) => {
+                // If struct name is unknown (?), use c_void
+                if name.starts_with('?') || name.is_empty() {
+                    return "c_void".to_string();
+                }
+
+                // Strip ALL leading underscores from struct names (e.g., __CFString -> CFString)
+                let clean_name = name.trim_start_matches('_');
+
+                // Map common C/POSIX/system types to c_void since we don't have their definitions
+                // Check prefixes/patterns first, then specific names
+                if clean_name.starts_with("CF") || clean_name.starts_with("CG") ||
+                   clean_name.starts_with("Sec") || clean_name.starts_with("nw_") ||
+                   clean_name.starts_with("xpc_") || clean_name.starts_with("HTTP") ||
+                   clean_name.starts_with("URL") || clean_name.starts_with("IO") ||
+                   clean_name.starts_with("dispatch_") || clean_name.starts_with("os_") ||
+                   clean_name.contains("Cookie") {
+                    "c_void".to_string()
+                } else {
+                    match clean_name {
+                        // POSIX types
+                        "stat" | "timespec" | "timeval" | "addrinfo" | "sockaddr" |
+                        "sockaddr_in" | "sockaddr_in6" | "passwd" | "group" | "ftsent" |
+                        // SQLite
+                        "sqlite3" | "sqlite3_stmt" |
+                        // ASN.1 / Crypto types (from Security framework)
+                        "Attribute" | "Attribute_value" | "IssuerAndSerialNumber" |
+                        "AlgorithmIdentifier" | "heim_integer" | "heim_oid" |
+                        // Other opaque/private Foundation types
+                        "NSLTToken" | "NSRefCountedRunArray" | "NSRunArrayItem" |
+                        "NSMethodFrameArgInfo" | "InternalInit" | "audit_token_t" => "c_void".to_string(),
+                        _ => clean_name.to_string(),
+                    }
+                }
+            }
+            ObjCType::Unknown(s) => format!("/* {} */ c_void", s),
         }
     }
 }
@@ -194,5 +235,58 @@ mod tests {
         assert_eq!(ObjCType::Id.to_rust_type(), "id");
         assert_eq!(ObjCType::Class.to_rust_type(), "Class");
         assert_eq!(ObjCType::SEL.to_rust_type(), "SEL");
+    }
+
+    #[test]
+    fn test_parse_complex_struct() {
+        // {CGRect={CGPoint=dd}{CGSize=dd}}
+        let (ty, _) = parse_type_encoding("{CGRect={CGPoint=dd}{CGSize=dd}}");
+        match ty {
+            ObjCType::Struct(name) => assert_eq!(name, "CGRect"),
+            _ => panic!("Expected Struct type"),
+        }
+    }
+
+    #[test]
+    fn test_struct_underscore_stripping() {
+        // __CFString should strip to CFString
+        let ty = ObjCType::Struct("__CFString".to_string());
+        assert_eq!(ty.to_rust_type(), "c_void"); // CF* types map to c_void
+
+        // _NSRange should strip to NSRange
+        let ty = ObjCType::Struct("_NSRange".to_string());
+        assert_eq!(ty.to_rust_type(), "NSRange");
+    }
+
+    #[test]
+    fn test_pointer_types() {
+        // ^v = void pointer
+        let (ty, _) = parse_type_encoding("^v");
+        assert_eq!(ty.to_rust_type(), "*mut ()");
+
+        // ^{__CFString=} = pointer to __CFString
+        let (ty, _) = parse_type_encoding("^{__CFString=}");
+        assert_eq!(ty.to_rust_type(), "*mut c_void");
+    }
+
+    #[test]
+    fn test_cf_types_map_to_c_void() {
+        // All CF* types should map to c_void
+        assert_eq!(ObjCType::Struct("CFString".to_string()).to_rust_type(), "c_void");
+        assert_eq!(ObjCType::Struct("CGPoint".to_string()).to_rust_type(), "c_void");
+        assert_eq!(ObjCType::Struct("CFDictionary".to_string()).to_rust_type(), "c_void");
+    }
+
+    #[test]
+    fn test_security_types_map_to_c_void() {
+        // Security framework types
+        assert_eq!(ObjCType::Struct("SecKey".to_string()).to_rust_type(), "c_void");
+        assert_eq!(ObjCType::Struct("SecTrust".to_string()).to_rust_type(), "c_void");
+    }
+
+    #[test]
+    fn test_unknown_struct_becomes_identifier() {
+        // Unknown custom structs pass through
+        assert_eq!(ObjCType::Struct("MyCustomStruct".to_string()).to_rust_type(), "MyCustomStruct");
     }
 }

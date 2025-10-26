@@ -6,12 +6,20 @@
 //! - Objective-C classes (from runtime introspection)
 
 mod tbd;
+mod type_encoding;
 mod objc_codegen;
 
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 use tbd::{TbdInfo, parse_tbd_file};
+
+// Constants for symbol filtering
+const MAX_INTERNAL_SYMBOL_LENGTH: usize = 50;
+
+// Constants for class dump paths
+const FULL_CLASS_DUMP_PATH: &str = "/tmp/all_objc_classes.txt";
+const FOUNDATION_CLASS_DUMP_PATH: &str = "/tmp/foundation_classes.txt";
 
 // ============================================================================
 // Bindings Generation
@@ -64,8 +72,8 @@ fn generate_tbd_bindings(tbd_info: &TbdInfo, module_name: &str, out_path: &Path)
         output.push_str("extern \"C\" {\n");
 
         for symbol in &tbd_info.symbols {
-            // Skip internal/linker symbols
-            if symbol.starts_with('$') || symbol.starts_with('_') && symbol.len() > 50 {
+            // Skip internal/linker symbols and overly long internal symbols
+            if symbol.starts_with('$') || (symbol.starts_with('_') && symbol.len() > MAX_INTERNAL_SYMBOL_LENGTH) {
                 continue;
             }
 
@@ -232,9 +240,17 @@ pub fn main() {
             println!("cargo:warning=ios-sys: Header-only mode (enable 'runtime' feature to link)");
         }
     } else {
-        println!("cargo:warning=ios-sys: No iOS SDK found - cannot generate bindings!");
-        println!("cargo:warning=To use Theos SDKs, clone them into submodules/sdks/");
-        panic!("ios-sys requires iOS SDK in submodules/sdks/ to generate bindings");
+        println!("cargo:warning=━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+        println!("cargo:warning=ERROR: iOS SDK not found!");
+        println!("cargo:warning=");
+        println!("cargo:warning=ios-sys requires an iOS SDK to generate bindings.");
+        println!("cargo:warning=");
+        println!("cargo:warning=To set up the SDK:");
+        println!("cargo:warning=  git clone https://github.com/theos/sdks submodules/sdks");
+        println!("cargo:warning=");
+        println!("cargo:warning=Or download from: https://github.com/theos/sdks/releases");
+        println!("cargo:warning=━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+        std::process::exit(1);
     }
 }
 
@@ -673,6 +689,27 @@ fn generate_bindings(sdk_path: &Path) {
         .write_to_file(out_path.join("objc.rs"))
         .expect("Couldn't write objc bindings!");
 
+    // Append additional msgSend variants that bindgen might miss
+    let objc_additions = r#"
+// Additional objc_msgSend variants for different return types
+unsafe extern "C" {
+    /// objc_msgSend for floating-point return values (x86/x86_64)
+    pub fn objc_msgSend_fpret();
+
+    /// objc_msgSend for floating-point return on stret (x86)
+    pub fn objc_msgSend_fp2ret();
+}
+"#;
+
+    let mut objc_file = fs::OpenOptions::new()
+        .append(true)
+        .open(out_path.join("objc.rs"))
+        .expect("Failed to open objc.rs for appending");
+
+    use std::io::Write;
+    objc_file.write_all(objc_additions.as_bytes())
+        .expect("Failed to append to objc.rs");
+
     // Generate Mach kernel bindings (ALWAYS)
     println!("cargo:warning=Generating Mach kernel bindings...");
     let mach_bindings = bindgen::Builder::default()
@@ -728,14 +765,41 @@ fn generate_bindings(sdk_path: &Path) {
         .write_to_file(out_path.join("mach.rs"))
         .expect("Couldn't write mach bindings!");
 
+    // Generate C stdlib bindings for memory management (ALWAYS)
+    println!("cargo:warning=Generating C stdlib bindings...");
+    let stdlib_bindings = bindgen::Builder::default()
+        .header_contents(
+            "stdlib_wrapper.h",
+            r#"
+#include <stdlib.h>
+            "#,
+        )
+        .clang_args(&common_args)
+        .allowlist_function("free")
+        .allowlist_function("malloc")
+        .allowlist_function("calloc")
+        .allowlist_function("realloc")
+        .allowlist_function("aligned_alloc")
+        .derive_default(true)
+        .derive_debug(true)
+        .use_core()
+        .ctypes_prefix("::core::ffi")
+        .parse_callbacks(Box::new(bindgen::CargoCallbacks::new()))
+        .generate()
+        .expect("Unable to generate stdlib bindings");
+
+    stdlib_bindings
+        .write_to_file(out_path.join("stdlib.rs"))
+        .expect("Couldn't write stdlib bindings!");
+
     // Generate Foundation bindings (ALWAYS)
     println!("cargo:warning=Generating Foundation bindings from runtime dump...");
 
     // Check if we have a class dump file (prefer comprehensive dump)
-    let class_dump_path = if Path::new("/tmp/all_objc_classes.txt").exists() {
-        Path::new("/tmp/all_objc_classes.txt")
+    let class_dump_path = if Path::new(FULL_CLASS_DUMP_PATH).exists() {
+        Path::new(FULL_CLASS_DUMP_PATH)
     } else {
-        Path::new("/tmp/foundation_classes.txt")
+        Path::new(FOUNDATION_CLASS_DUMP_PATH)
     };
     if class_dump_path.exists() {
         if let Err(e) = objc_codegen::generate_from_dump_file(
@@ -747,7 +811,8 @@ fn generate_bindings(sdk_path: &Path) {
             generate_minimal_foundation_bindings(&out_path);
         }
     } else {
-        println!("cargo:warning=No class dump found at /tmp/foundation_classes.txt");
+        println!("cargo:warning=No class dump found at {} or {}",
+                 FULL_CLASS_DUMP_PATH, FOUNDATION_CLASS_DUMP_PATH);
         println!("cargo:warning=Run class_dump tool on device to generate full bindings");
         generate_minimal_foundation_bindings(&out_path);
     }
