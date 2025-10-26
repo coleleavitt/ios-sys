@@ -9,7 +9,7 @@ rustflags = [
     "-C", "link-arg=-fuse-ld=/usr/lib/llvm/20/bin/ld64.lld",
     # Point to iOS SDK
     "-C", "link-arg=-isysroot/home/cole/RustProjects/active/ios-sys/submodules/sdks/iPhoneOS16.5.sdk",
-    # Target iOS with platform version
+    # Target iOS with platform version (my phone iOS 16.4.1; iPhone 11 Pro Max)
     "-C", "link-arg=-target",
     "-C", "link-arg=arm64-apple-ios16.0",
     # Platform version for ld64.lld (for my phone specifically)
