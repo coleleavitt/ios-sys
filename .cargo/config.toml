@@ -1,0 +1,23 @@
+[build]
+target = "aarch64-apple-ios"
+
+[target.aarch64-apple-ios]
+# Use LLVM's ld64 linker instead of system ld (which doesn't understand Mach-O)
+linker = "clang"
+rustflags = [
+    # Use ld64.lld as the actual linker (you'll need to download this FYI if you don't have it)
+    "-C", "link-arg=-fuse-ld=/usr/lib/llvm/20/bin/ld64.lld",
+    # Point to iOS SDK
+    "-C", "link-arg=-isysroot/home/cole/RustProjects/active/ios-sys/submodules/sdks/iPhoneOS16.5.sdk",
+    # Target iOS with platform version
+    "-C", "link-arg=-target",
+    "-C", "link-arg=arm64-apple-ios16.0",
+    # Platform version for ld64.lld (for my phone specifically)
+    "-C", "link-arg=-Wl,-platform_version,ios,16.0,16.5",
+    # Architecture
+    "-C", "link-arg=-arch",
+    "-C", "link-arg=arm64",
+    # Link against Foundation
+    "-C", "link-arg=-framework",
+    "-C", "link-arg=Foundation",
+]
